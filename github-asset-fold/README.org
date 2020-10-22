@@ -1,0 +1,5 @@
+#+title: github-asset-fold
+#+author: John Lavelle
+
+* Summary
+Functions to apply folds to GitHub release assets, useful for hashing or saving them.

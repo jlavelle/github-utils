@@ -1,0 +1,6 @@
+cradle:
+  cabal:
+    - path: "./github-asset-fold/src"
+      component: "lib:github-asset-fold"
+    - path: "./github-event-watcher/src"
+      component: "lib:github-event-watcher"

@@ -1,0 +1,45 @@
+cabal-version: 1.12
+
+-- This file has been generated from package.yaml by hpack version 0.33.0.
+--
+-- see: https://github.com/sol/hpack
+--
+-- hash: 91c647301727b2a2a0839a36bb6620967cdde91ae75b2e6d4affda5ae6e3a06d
+
+name:           github-event-watcher
+version:        0.1.0.0
+homepage:       https://github.com/jlavelle/github-utils#readme
+bug-reports:    https://github.com/jlavelle/github-utils/issues
+author:         John Lavelle
+maintainer:     jlavelle604@gmail.com
+copyright:      2020 John Lavelle
+license:        MIT
+build-type:     Simple
+
+source-repository head
+  type: git
+  location: https://github.com/jlavelle/github-utils
+
+library
+  exposed-modules:
+      GitHub.EventWatcher
+  other-modules:
+      Paths_github_event_watcher
+  hs-source-dirs:
+      src
+  default-extensions: ApplicativeDo BangPatterns ConstraintKinds DataKinds DefaultSignatures DeriveAnyClass DeriveDataTypeable DeriveFoldable DeriveFunctor DeriveGeneric DeriveLift DeriveTraversable DerivingStrategies DerivingVia EmptyCase ExistentialQuantification FlexibleContexts FlexibleInstances FunctionalDependencies GADTs GeneralizedNewtypeDeriving InstanceSigs KindSignatures LambdaCase MultiParamTypeClasses MultiWayIf NamedFieldPuns NoImplicitPrelude OverloadedStrings PatternSynonyms RankNTypes ScopedTypeVariables StandaloneDeriving TupleSections TypeApplications TypeFamilies TypeFamilyDependencies TypeOperators ViewPatterns
+  ghc-options: -Wall -Wcompat -Wincomplete-record-updates -Wincomplete-uni-patterns -Wredundant-constraints
+  build-depends:
+      base >=4.13 && <4.14
+    , binary
+    , bytestring
+    , deepseq
+    , exceptions
+    , github
+    , http-client
+    , http-types
+    , nonempty-vector
+    , text
+    , time
+    , vector
+  default-language: Haskell2010
