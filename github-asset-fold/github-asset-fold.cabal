@@ -4,10 +4,10 @@ cabal-version: 1.12
 --
 -- see: https://github.com/sol/hpack
 --
--- hash: 1de56ff85bf099119ee911fe5a7822d785bba79ee2d0014abf74ae0ac853f3a6
+-- hash: e4ba39eea7199a0a163a4d8b343cb3763489fbff553a23d895e9160131b2a0f4
 
 name:           github-asset-fold
-version:        0.1.0.0
+version:        0.4.0.1
 homepage:       https://github.com/jlavelle/github-utils#readme
 bug-reports:    https://github.com/jlavelle/github-utils/issues
 author:         John Lavelle
@@ -40,7 +40,6 @@ library
     , deepseq
     , exceptions
     , foldl
-    , generics-sop
     , github
     , http-client
     , http-client-tls
@@ -50,7 +49,6 @@ library
     , profunctors
     , sqlite-simple
     , stm
-    , tagged
     , text
     , vector
   default-language: Haskell2010
@@ -74,7 +72,6 @@ test-suite github-asset-fold-test
     , deepseq
     , exceptions
     , foldl
-    , generics-sop
     , github
     , github-asset-fold
     , http-client
@@ -85,7 +82,6 @@ test-suite github-asset-fold-test
     , profunctors
     , sqlite-simple
     , stm
-    , tagged
     , text
     , vector
   default-language: Haskell2010
