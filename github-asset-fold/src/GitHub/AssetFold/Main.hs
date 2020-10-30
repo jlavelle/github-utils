@@ -16,7 +16,7 @@ import           Control.DeepSeq                (NFData)
 import qualified Control.Exception
 import           Control.Foldl                  (FoldM (..))
 import qualified Control.Foldl
-import           Control.Monad                  ((>=>))
+import           Control.Monad                  ((>=>), forever)
 import           Control.Monad.Catch            (MonadMask)
 import qualified Control.Monad.Catch
 import           Control.Monad.IO.Class         (MonadIO (liftIO))
@@ -158,7 +158,6 @@ data Resource m h = Resource
   , resourceRelease :: h -> m ()
   , resourceWith :: forall x . (h -> m x) -> m x
   }
-  deriving Generic
 
 defaultResourceWith :: MonadMask m => m h -> (h -> m ()) -> (h -> m x) -> m x
 defaultResourceWith = Control.Monad.Catch.bracket
@@ -230,13 +229,15 @@ releaseMapMain config fold codec parseNames callback = do
   let pids = binSqliteIds "release"
       (pdat, writeWorker) = workerize queue $ binSqliteData "release"
   resourceWith (sqliteResource "data.db") $ \conn ->
-    Async.withAsync writeWorker $ \_ ->
-      assetFoldCli
-        config
-        (releaseMapFold parseNames fold)
-        (cmapQuery (const conn) pids)
-        (releaseMapCodec codec (cmapQuery (const conn) $ lmap (conn,) pdat))
-        (lmap toReleaseMap callback)
+    Async.withAsync writeWorker $ \a1 -> do
+      x <- assetFoldCli
+             config
+             (releaseMapFold parseNames fold)
+             (cmapQuery (const conn) pids)
+             (releaseMapCodec codec (cmapQuery (const conn) $ lmap (conn,) pdat))
+             (lmap toReleaseMap callback)
+      Async.cancel a1
+      pure x
 
 assetFoldCli
   :: AuthMethod am
@@ -263,12 +264,14 @@ workerize
   -> Persist IO q r i o
   -> (Persist IO q () i o, IO r)
 workerize queue (Persist r w) =
-  let persist = Persist r (\i -> STM.atomically $ TBQueue.writeTBQueue queue i)
+  let persist = Persist
+        (\q -> STM.atomically (STM.check =<< TBQueue.isEmptyTBQueue queue) *> r q)
+        (\i -> STM.atomically $ TBQueue.writeTBQueue queue i)
       worker  = persistenceWorker queue w
   in (persist, worker)
 
 persistenceWorker :: TBQueue a -> (a -> IO x) -> IO x
-persistenceWorker q f = f =<< STM.atomically (TBQueue.readTBQueue q)
+persistenceWorker q f = forever (f =<< STM.atomically (TBQueue.readTBQueue q))
 
 -- Just wraps foldNewRepoAssets
 getNewAssets
