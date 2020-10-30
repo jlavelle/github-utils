@@ -106,15 +106,6 @@ data Codec i o a b = Codec
 
 type Codec' a b = Codec a a b b
 
--- | Profunctor instance over the i and o params
-newtype Codecabio a b i o = Codecabio { unCodecabio :: Codec i o a b }
-
-instance Functor (Codecabio a b i) where
-  fmap f (Codecabio c) = Codecabio $ c { codecEncode = f <$> codecEncode c }
-
-instance Profunctor (Codecabio a b) where
-  dimap f g (Codecabio (Codec enc dec)) = Codecabio (Codec (fmap g enc) (lmap f dec))
-
 instance Profunctor (Codec i o) where
   dimap f g (Codec enc dec) = Codec (lmap f enc) (fmap g dec)
 
@@ -150,9 +141,6 @@ mapResponse f p = p { persistWrite = (fmap . fmap) f $ persistWrite p }
 hoistPersist :: (forall a. m a -> n a) -> Persist m q r i o -> Persist n q r i o
 hoistPersist n (Persist r w) = Persist (\q -> n $ r q) (\i -> n $ w i)
 
-cached :: Monad m => Persist m a x (a, b) (Maybe b) -> (a -> m b) -> a -> m b
-cached (Persist r w) f a = r a >>= maybe (f a >>= \b -> b <$ w (a, b)) pure
-
 -- | Persistence for binary data indexed by an integer id. The data will be written into a table
 -- called tableName (which will be created whenever an operation is run if it doesn't exist) with
 -- the schema: (id integer primary key, data blob)
@@ -165,12 +153,12 @@ binSqliteData table = Persist pread pwrite
     pread conn = binaryDataSelectAll table conn
     pwrite (conn, (rid, bs)) = binaryDataInsert table conn rid bs
 
--- TODO Look at how the managed library handles this and what operations it can be used for
 data Resource m h = Resource
   { resourceAcquire :: m h
   , resourceRelease :: h -> m ()
   , resourceWith :: forall x . (h -> m x) -> m x
   }
+  deriving Generic
 
 defaultResourceWith :: MonadMask m => m h -> (h -> m ()) -> (h -> m x) -> m x
 defaultResourceWith = Control.Monad.Catch.bracket
@@ -250,15 +238,6 @@ releaseMapMain config fold codec parseNames callback = do
         (releaseMapCodec codec (cmapQuery (const conn) $ lmap (conn,) pdat))
         (lmap toReleaseMap callback)
 
-workerize
-  :: TBQueue i
-  -> Persist IO q r i o
-  -> (Persist IO q () i o, IO r)
-workerize queue (Persist r w) =
-  let persist = Persist r (\i -> STM.atomically $ TBQueue.writeTBQueue queue i)
-      worker  = persistenceWorker queue w
-  in (persist, worker)
-
 assetFoldCli
   :: AuthMethod am
   => Config am
@@ -278,6 +257,15 @@ postEffect f = composeExtract ((\cb b -> b <$ cb b) f)
 
 composeExtract :: Monad m => (b -> m r) -> FoldM m a b -> FoldM m a r
 composeExtract f (FoldM s i extract) = FoldM s i (extract >=> f)
+
+workerize
+  :: TBQueue i
+  -> Persist IO q r i o
+  -> (Persist IO q () i o, IO r)
+workerize queue (Persist r w) =
+  let persist = Persist r (\i -> STM.atomically $ TBQueue.writeTBQueue queue i)
+      worker  = persistenceWorker queue w
+  in (persist, worker)
 
 persistenceWorker :: TBQueue a -> (a -> IO x) -> IO x
 persistenceWorker q f = f =<< STM.atomically (TBQueue.readTBQueue q)
