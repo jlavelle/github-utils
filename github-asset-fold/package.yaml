@@ -67,8 +67,20 @@ dependencies:
   - http-client
   - http-client-tls
   - mtl
+  - stm
   - text
   - vector
+  - sqlite-simple
+  - neat-interpolation
+  - profunctors
+  - monoidal-containers
 
 library:
   source-dirs: src
+
+tests:
+  github-asset-fold-test:
+    main: Main.hs
+    source-dirs: test
+    dependencies:
+      - github-asset-fold

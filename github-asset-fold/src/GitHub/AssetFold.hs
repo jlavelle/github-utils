@@ -7,6 +7,7 @@ import           Control.Concurrent.QSem  (QSem)
 import qualified Control.Concurrent.QSem  as QSem
 import qualified Control.Exception
 import           Control.Foldl            (FoldM (..))
+import qualified Control.Foldl
 import           Control.Monad.Catch      (MonadCatch, MonadThrow)
 import qualified Control.Monad.Catch
 import           Control.Monad.Except     (ExceptT (..))
@@ -14,9 +15,6 @@ import qualified Control.Monad.Except     as ExceptT
 import qualified Data.Bool
 import           Data.ByteString          (ByteString)
 import qualified Data.ByteString          as ByteString
-import qualified Data.Foldable            as Foldable
-import           Data.Map                 (Map)
-import qualified Data.Map                 as Map
 import           Data.Set                 (Set)
 import qualified Data.Set                 as Set
 import qualified Data.Text                as Text
@@ -27,6 +25,7 @@ import           GitHub
 import qualified GitHub
 import qualified Network.HTTP.Client      as Http
 import qualified Network.HTTP.Client.TLS  as Tls
+import Control.Monad.Reader (ReaderT, runReaderT)
 
 withQSem :: QSem -> IO a -> IO a
 withQSem s = Control.Exception.bracket_ (QSem.waitQSem s) (QSem.signalQSem s)
@@ -59,23 +58,18 @@ releaseAssetRequest = Http.parseUrlThrow . Text.unpack . GitHub.releaseAssetBrow
 foldReleaseAsset :: FoldM IO ByteString a -> ReleaseAsset -> IO a
 foldReleaseAsset f r = releaseAssetRequest r >>= httpFoldedBody f
 
-toSnd :: Functor f => (a -> f b) -> a -> f (a, b)
-toSnd f a = (a,) <$> f a
+type AssetFold a = FoldM (ReaderT (Release, ReleaseAsset) IO) ByteString a
 
-foldRelease :: QSem -> FoldM IO ByteString a -> Release -> IO (Map ReleaseAsset a)
-foldRelease sem f r =
-  let as = Vector.toList $ GitHub.releaseAssets r
-  in Map.fromList <$> mapConcurrentlyN sem (toSnd $ foldReleaseAsset f) as
+runAssetFold :: AssetFold a -> Release -> ReleaseAsset -> IO a
+runAssetFold f r a = foldReleaseAsset (Control.Foldl.hoists (`runReaderT` (r, a)) f) a
 
-foldReleases
-  :: Foldable f
-  => Int
-  -> FoldM IO ByteString a
-  -> f Release
-  -> IO (Map Release (Map ReleaseAsset a))
+foldRelease :: QSem -> AssetFold a -> Release -> IO (Vector a)
+foldRelease sem f r = mapConcurrentlyN sem (runAssetFold f r) (GitHub.releaseAssets r)
+
+foldReleases :: Traversable f => Int -> AssetFold a -> f Release -> IO (f (Vector a))
 foldReleases n f rs = do
   sem <- QSem.newQSem n
-  Map.fromList <$> Async.mapConcurrently (toSnd $ foldRelease sem f) (Foldable.toList rs)
+  Async.mapConcurrently (foldRelease sem f) rs
 
 -- | Get the releases from a repository, but restrict their assets to those whose ids are not in a
 -- a given set, then remove releases without any assets from the result.
@@ -107,6 +101,8 @@ filterAssets p r = r { GitHub.releaseAssets = Vector.filter p $ GitHub.releaseAs
 assetIdInSet :: Set (Id ReleaseAsset) -> ReleaseAsset -> Bool
 assetIdInSet s ra = GitHub.releaseAssetId ra `Set.member` s
 
+-- Note that the fold may be running on up to n threads at a given time, so it should be
+-- written in a thread-safe manner.
 foldNewRepoAssets
   :: AuthMethod am
   => Int -- ^ The maximum number of concurrent requests
@@ -115,8 +111,8 @@ foldNewRepoAssets
   -> Name Repo
   -> FetchCount
   -> Set (Id ReleaseAsset) -- ^ A set of release asset ids to exclude
-  -> FoldM IO ByteString a
-  -> IO (Either Error (Map Release (Map ReleaseAsset a)))
+  -> AssetFold a
+  -> IO (Either Error (Vector (Vector a)))
 foldNewRepoAssets n am owner repo count old f = ExceptT.runExceptT $ do
   nrs <- ExceptT $ getNewRepoAssets am owner repo count old
   ExceptT $ catchHttp GitHub.HTTPError $ foldReleases n f nrs

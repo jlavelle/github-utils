@@ -4,7 +4,7 @@ cabal-version: 1.12
 --
 -- see: https://github.com/sol/hpack
 --
--- hash: 70df20d1d4cb6fb7b3877e839d34f3e29f644da0325cb253e9ce34ba541c4082
+-- hash: 1de56ff85bf099119ee911fe5a7822d785bba79ee2d0014abf74ae0ac853f3a6
 
 name:           github-asset-fold
 version:        0.1.0.0
@@ -40,10 +40,52 @@ library
     , deepseq
     , exceptions
     , foldl
+    , generics-sop
     , github
     , http-client
     , http-client-tls
+    , monoidal-containers
     , mtl
+    , neat-interpolation
+    , profunctors
+    , sqlite-simple
+    , stm
+    , tagged
+    , text
+    , vector
+  default-language: Haskell2010
+
+test-suite github-asset-fold-test
+  type: exitcode-stdio-1.0
+  main-is: Main.hs
+  other-modules:
+      Paths_github_asset_fold
+  hs-source-dirs:
+      test
+  default-extensions: ApplicativeDo BangPatterns ConstraintKinds DataKinds DefaultSignatures DeriveDataTypeable DeriveFoldable DeriveFunctor DeriveGeneric DeriveLift DeriveTraversable DerivingStrategies DerivingVia EmptyCase ExistentialQuantification FlexibleContexts FlexibleInstances FunctionalDependencies GADTs GeneralizedNewtypeDeriving InstanceSigs KindSignatures LambdaCase MultiParamTypeClasses MultiWayIf NamedFieldPuns NoImplicitPrelude OverloadedStrings PatternSynonyms RankNTypes ScopedTypeVariables StandaloneDeriving TupleSections TypeApplications TypeFamilies TypeFamilyDependencies TypeOperators ViewPatterns
+  ghc-options: -Wall -Wcompat -Wincomplete-record-updates -Wincomplete-uni-patterns -Wredundant-constraints
+  build-depends:
+      aeson
+    , async
+    , base >=4.13 && <4.14
+    , binary
+    , bytestring
+    , containers
+    , deepseq
+    , exceptions
+    , foldl
+    , generics-sop
+    , github
+    , github-asset-fold
+    , http-client
+    , http-client-tls
+    , monoidal-containers
+    , mtl
+    , neat-interpolation
+    , profunctors
+    , sqlite-simple
+    , stm
+    , tagged
     , text
     , vector
   default-language: Haskell2010
