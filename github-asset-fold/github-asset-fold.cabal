@@ -4,10 +4,10 @@ cabal-version: 1.12
 --
 -- see: https://github.com/sol/hpack
 --
--- hash: e4ba39eea7199a0a163a4d8b343cb3763489fbff553a23d895e9160131b2a0f4
+-- hash: 0eb8199e6e9b0d004d02727971f856c273d49139898fc9520e434e09c69b8e99
 
 name:           github-asset-fold
-version:        0.4.0.1
+version:        0.5.0.0
 homepage:       https://github.com/jlavelle/github-utils#readme
 bug-reports:    https://github.com/jlavelle/github-utils/issues
 author:         John Lavelle
@@ -37,6 +37,7 @@ library
     , binary
     , bytestring
     , containers
+    , cryptohash-sha256
     , deepseq
     , exceptions
     , foldl
@@ -61,7 +62,7 @@ test-suite github-asset-fold-test
   hs-source-dirs:
       test
   default-extensions: ApplicativeDo BangPatterns ConstraintKinds DataKinds DefaultSignatures DeriveDataTypeable DeriveFoldable DeriveFunctor DeriveGeneric DeriveLift DeriveTraversable DerivingStrategies DerivingVia EmptyCase ExistentialQuantification FlexibleContexts FlexibleInstances FunctionalDependencies GADTs GeneralizedNewtypeDeriving InstanceSigs KindSignatures LambdaCase MultiParamTypeClasses MultiWayIf NamedFieldPuns NoImplicitPrelude OverloadedStrings PatternSynonyms RankNTypes ScopedTypeVariables StandaloneDeriving TupleSections TypeApplications TypeFamilies TypeFamilyDependencies TypeOperators ViewPatterns
-  ghc-options: -Wall -Wcompat -Wincomplete-record-updates -Wincomplete-uni-patterns -Wredundant-constraints
+  ghc-options: -Wall -Wcompat -Wincomplete-record-updates -Wincomplete-uni-patterns -Wredundant-constraints -threaded -rtsopts -with-rtsopts=-N
   build-depends:
       aeson
     , async
@@ -69,6 +70,7 @@ test-suite github-asset-fold-test
     , binary
     , bytestring
     , containers
+    , cryptohash-sha256
     , deepseq
     , exceptions
     , foldl

@@ -6,21 +6,22 @@ module GitHub.AssetFold.Main where
 
 import           Prelude
 
-import           Control.Applicative            (Alternative ((<|>)))
-import           Control.Applicative            (Alternative (empty))
+import           Control.Applicative            (Alternative (..))
 import qualified Control.Concurrent.Async       as Async
 import qualified Control.Concurrent.STM         as STM
 import           Control.Concurrent.STM.TBQueue (TBQueue)
 import qualified Control.Concurrent.STM.TBQueue as TBQueue
 import           Control.DeepSeq                (NFData)
 import qualified Control.Exception
-import           Control.Foldl                  (FoldM (..))
+import           Control.Foldl                  (Fold, FoldM (..))
 import qualified Control.Foldl
-import           Control.Monad                  ((>=>), forever)
+import           Control.Monad                  (forever, (>=>))
 import           Control.Monad.Catch            (MonadMask)
 import qualified Control.Monad.Catch
 import           Control.Monad.IO.Class         (MonadIO (liftIO))
+import           Control.Monad.Reader           (ReaderT (..))
 import qualified Control.Monad.Reader
+import qualified Crypto.Hash.SHA256             as Sha256
 import           Data.Aeson
     (Encoding, Value, parseJSON, toEncoding, withObject, (.:))
 import           Data.Aeson                     (Value (..))
@@ -38,12 +39,11 @@ import qualified Data.Coerce
 import           Data.Data                      (Data)
 import qualified Data.Foldable
 import           Data.Function                  ((&))
-import           Data.Functor                   ((<&>))
 import qualified Data.Map.Monoidal              as MonoidalMap
 import           Data.Map.Strict                (Map)
 import qualified Data.Map.Strict                as Map
 import           Data.Profunctor                (Profunctor (..))
-import qualified Data.Proxy
+import           Data.Proxy                     (Proxy (..))
 import qualified Data.Set                       as Set
 import           Data.Text                      (Text)
 import qualified Data.Text                      as Text
@@ -109,6 +109,9 @@ type Codec' a b = Codec a a b b
 instance Profunctor (Codec i o) where
   dimap f g (Codec enc dec) = Codec (lmap f enc) (fmap g dec)
 
+strictify :: Codec LBS.ByteString LBS.ByteString a b -> Codec ByteString ByteString a b
+strictify (Codec enc dec) = Codec (LBS.toStrict . enc) (dec . LBS.fromStrict)
+
 binaryCodec :: Binary a => Codec LBS.ByteString LBS.ByteString a (Either Text a)
 binaryCodec = Codec enc dec
   where
@@ -117,11 +120,17 @@ binaryCodec = Codec enc dec
       Data.Bifunctor.bimap (\(_, _, e) -> Text.pack e) (\(_, _, a) -> a)
       . Binary.decodeOrFail
 
+binaryCodecStrict :: Binary a => Codec ByteString ByteString a (Either Text a)
+binaryCodecStrict = strictify binaryCodec
+
 jsonCodec :: (ToJSON a, FromJSON a) => Codec LBS.ByteString LBS.ByteString a (Either Text a)
 jsonCodec = Codec enc dec
   where
     enc = Aeson.encode
     dec = Data.Bifunctor.first Text.pack . Aeson.eitherDecode
+
+jsonCodecStrict :: (ToJSON a, FromJSON a) => Codec ByteString ByteString a (Either Text a)
+jsonCodecStrict = strictify jsonCodec
 
 data Persist m q r i o = Persist
   { persistRead :: q -> m o
@@ -180,20 +189,22 @@ sqliteResource dbname = Resource
 data Platform
 
 tagPlatform :: Text -> Name Platform
-tagPlatform = GitHub.mkName (Data.Proxy.Proxy @Platform)
+tagPlatform = GitHub.mkName (Proxy @Platform)
 
 type ReleaseMap a = Map (Name Release) (Map (Name Platform) (Map (Name ReleaseAsset) a))
 
+slorp :: Monad m => FoldM m a (b -> c) -> FoldM (ReaderT b m) a c
+slorp = composeExtract (\f -> ReaderT $ \b -> pure $ f b) . Control.Foldl.hoists (ReaderT . const)
+
 releaseMapFold
   :: (Release -> ReleaseAsset -> a -> ReleaseMapData)
-  -> FoldM IO ByteString a
+  -> FoldM IO ByteString (Release -> ReleaseAsset -> a)
   -> AssetFold (ReleaseMapData, Id ReleaseAsset, a)
-releaseMapFold parseNames =
-  composeExtract
-    (\a -> Control.Monad.Reader.ask <&>
-       \(r, ra) -> (parseNames r ra a, GitHub.releaseAssetId ra, a)
-    )
-  . Control.Foldl.hoists liftIO
+releaseMapFold parseNames = composeExtract applyParse . slorp . fmap uncurry
+  where
+    applyParse a = do
+      (r, ra) <- Control.Monad.Reader.ask
+      pure (parseNames r ra a, GitHub.releaseAssetId ra, a)
 
 toReleaseMap :: Vector (ReleaseMapData, Id ReleaseAsset, a) -> ReleaseMap a
 toReleaseMap = Data.Coerce.coerce . foldMap
@@ -212,32 +223,42 @@ releaseMapCodec
   -> Persist IO q r (ReleaseMapData, Id ReleaseAsset, a) (Vector (ReleaseMapData, Id ReleaseAsset, a))
 releaseMapCodec (Codec enc dec) = dimap
   (\(d, i, a) -> (GitHub.untagId i, enc (d, a)))
-  (fmap (\(i, bs) -> dec bs & \(r, a) -> (r, GitHub.mkId Data.Proxy.Proxy i, a)))
+  (fmap (\(i, bs) -> dec bs & \(r, a) -> (r, GitHub.mkId Proxy i, a)))
 
 type ReleaseMapData = (Name Release, Name Platform, Name ReleaseAsset)
+
+sha256 :: Fold ByteString ByteString
+sha256 = Control.Foldl.Fold Sha256.update Sha256.init Sha256.finalize
+
+assetUrlAndSha256 :: Fold ByteString (Release -> ReleaseAsset -> (Text, ByteString))
+assetUrlAndSha256 =
+  (\mkUrl bs _ ra -> (mkUrl ra, bs))
+  <$> pure GitHub.releaseAssetBrowserDownloadUrl
+  <*> sha256
 
 releaseMapMain
   :: AuthMethod am
   => Config am
-  -> FoldM IO ByteString a
+  -> FoldM IO ByteString (Release -> ReleaseAsset -> a)
   -> Codec' ByteString (ReleaseMapData, a)
   -> (Release -> ReleaseAsset -> a -> ReleaseMapData)
+  -> FilePath
   -> (ReleaseMap a -> IO x)
   -> IO x
-releaseMapMain config fold codec parseNames callback = do
+releaseMapMain config fold codec parseNames path callback = do
   queue <- TBQueue.newTBQueueIO 10
   let pids = binSqliteIds "release"
       (pdat, writeWorker) = workerize queue $ binSqliteData "release"
-  resourceWith (sqliteResource "data.db") $ \conn ->
-    Async.withAsync writeWorker $ \a1 -> do
-      x <- assetFoldCli
-             config
-             (releaseMapFold parseNames fold)
-             (cmapQuery (const conn) pids)
-             (releaseMapCodec codec (cmapQuery (const conn) $ lmap (conn,) pdat))
-             (lmap toReleaseMap callback)
-      Async.cancel a1
-      pure x
+      cli conn = assetFoldCli
+        config
+          (releaseMapFold parseNames fold)
+          (cmapQuery (const conn) pids)
+          (releaseMapCodec codec (cmapQuery (const conn) $ lmap (conn,) pdat))
+          (lmap toReleaseMap callback)
+  resourceWith (sqliteResource path) $ \conn ->
+    Async.withAsync writeWorker $ \a1 ->
+      Async.withAsync (cli conn) $ \a2 ->
+        either absurd id <$> Async.waitEither a1 a2
 
 assetFoldCli
   :: AuthMethod am
@@ -249,9 +270,12 @@ assetFoldCli
   -> IO x
 assetFoldCli config fold pids pdata callback = do
   existing <- persistRead pids ()
-  getNewAssets config existing $ postEffect (persistWrite $ hoistPersist liftIO pdata) fold
-  d <- persistRead pdata ()
-  callback d
+  enew <- getNewAssets config existing $ postEffect (persistWrite $ hoistPersist liftIO pdata) fold
+  case enew of
+    Left err -> error $ show err
+    Right _ -> do
+      d <- persistRead pdata ()
+      callback d
 
 postEffect :: Monad m => (b -> m r) -> FoldM m a b -> FoldM m a b
 postEffect f = composeExtract ((\cb b -> b <$ cb b) f)
@@ -262,16 +286,16 @@ composeExtract f (FoldM s i extract) = FoldM s i (extract >=> f)
 workerize
   :: TBQueue i
   -> Persist IO q r i o
-  -> (Persist IO q () i o, IO r)
+  -> (Persist IO q () i o, IO x)
 workerize queue (Persist r w) =
   let persist = Persist
         (\q -> STM.atomically (STM.check =<< TBQueue.isEmptyTBQueue queue) *> r q)
-        (\i -> STM.atomically $ TBQueue.writeTBQueue queue i)
+        (STM.atomically . TBQueue.writeTBQueue queue)
       worker  = persistenceWorker queue w
   in (persist, worker)
 
-persistenceWorker :: TBQueue a -> (a -> IO x) -> IO x
-persistenceWorker q f = forever (f =<< STM.atomically (TBQueue.readTBQueue q))
+persistenceWorker :: TBQueue a -> (a -> IO b) -> IO c
+persistenceWorker q f = forever $ f =<< STM.atomically (TBQueue.readTBQueue q)
 
 -- Just wraps foldNewRepoAssets
 getNewAssets
@@ -287,7 +311,7 @@ getNewAssets Config{..} existing fold =
     configOwner
     configRepo
     configFetchCount
-    (Set.fromList $ Data.Foldable.toList $ fmap (GitHub.mkId Data.Proxy.Proxy) $ existing)
+    (Set.fromList $ Data.Foldable.toList $ fmap (GitHub.mkId Proxy) $ existing)
     fold
 
 data SqlFieldType = FieldInteger

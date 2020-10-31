@@ -90,7 +90,7 @@ getNewRepoAssets am owner repo count old = ExceptT.runExceptT $ do
 maybeNewReleaseAssets :: Set (Id ReleaseAsset) -> Release -> Maybe Release
 maybeNewReleaseAssets old r =
   let r' = filterAssets (not . assetIdInSet old) r
-  in Data.Bool.bool Nothing (Just r') $ emptyRelease r'
+  in Data.Bool.bool (Just r') Nothing $ emptyRelease r'
 
 emptyRelease :: Release -> Bool
 emptyRelease = Vector.null . GitHub.releaseAssets

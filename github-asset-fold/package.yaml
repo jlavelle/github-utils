@@ -1,5 +1,5 @@
 name:       github-asset-fold
-version:    0.4.0.1
+version:    0.5.0.0
 github:     jlavelle/github-utils
 license:    MIT
 author:     John Lavelle
@@ -60,20 +60,21 @@ dependencies:
   - binary
   - bytestring
   - containers
+  - cryptohash-sha256
   - deepseq
   - exceptions
   - foldl
   - github
   - http-client
   - http-client-tls
+  - monoidal-containers
   - mtl
+  - neat-interpolation
+  - profunctors
+  - sqlite-simple
   - stm
   - text
   - vector
-  - sqlite-simple
-  - neat-interpolation
-  - profunctors
-  - monoidal-containers
 
 library:
   source-dirs: src
@@ -82,5 +83,9 @@ tests:
   github-asset-fold-test:
     main: Main.hs
     source-dirs: test
+    ghc-options:
+      - -threaded
+      - -rtsopts
+      - -with-rtsopts=-N
     dependencies:
       - github-asset-fold
