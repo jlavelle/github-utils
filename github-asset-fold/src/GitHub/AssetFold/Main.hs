@@ -16,8 +16,6 @@ import qualified Control.Exception
 import           Control.Foldl                  (Fold, FoldM (..))
 import qualified Control.Foldl
 import           Control.Monad                  (forever, (>=>))
-import           Control.Monad.Catch            (MonadMask)
-import qualified Control.Monad.Catch
 import           Control.Monad.IO.Class         (MonadIO (liftIO))
 import           Control.Monad.Reader           (ReaderT (..))
 import qualified Control.Monad.Reader
@@ -38,17 +36,17 @@ import qualified Data.ByteString.Lazy           as LBS
 import qualified Data.Coerce
 import           Data.Data                      (Data)
 import qualified Data.Foldable
-import           Data.Function                  ((&))
 import qualified Data.Map.Monoidal              as MonoidalMap
 import           Data.Map.Strict                (Map)
 import qualified Data.Map.Strict                as Map
 import           Data.Profunctor                (Profunctor (..))
 import           Data.Proxy                     (Proxy (..))
+import           Data.Set                       (Set)
 import qualified Data.Set                       as Set
 import           Data.Text                      (Text)
 import qualified Data.Text                      as Text
 import           Data.Vector                    (Vector)
-import           Data.Void                      (Void, absurd)
+import           Data.Void                      (absurd)
 import           Database.SQLite.Simple         (Connection, NamedParam (..), Query (..))
 import qualified Database.SQLite.Simple         as Sqlite
 import           GHC.Generics                   (Generic)
@@ -58,6 +56,7 @@ import qualified GitHub
 import           GitHub.AssetFold               (AssetFold)
 import qualified GitHub.AssetFold
 import           NeatInterpolation              (text)
+import qualified Data.Foldable as Foldable
 
 -- TODO This should really be called something more descriptive
 data Config am = Config
@@ -112,7 +111,7 @@ instance Profunctor (Codec i o) where
 strictify :: Codec LBS.ByteString LBS.ByteString a b -> Codec ByteString ByteString a b
 strictify (Codec enc dec) = Codec (LBS.toStrict . enc) (dec . LBS.fromStrict)
 
-binaryCodec :: Binary a => Codec LBS.ByteString LBS.ByteString a (Either Text a)
+binaryCodec :: (Binary a, Binary b) => Codec LBS.ByteString LBS.ByteString a (Either Text b)
 binaryCodec = Codec enc dec
   where
     enc = Binary.encode
@@ -132,60 +131,6 @@ jsonCodec = Codec enc dec
 jsonCodecStrict :: (ToJSON a, FromJSON a) => Codec ByteString ByteString a (Either Text a)
 jsonCodecStrict = strictify jsonCodec
 
-data Persist m q r i o = Persist
-  { persistRead :: q -> m o
-  , persistWrite :: i -> m r
-  }
-  deriving (Functor, Generic)
-
-instance Functor m => Profunctor (Persist m q r) where
-  dimap f g (Persist r w) = Persist ((fmap . fmap) g r) (lmap f w)
-
-cmapQuery :: (p -> q) -> Persist m q r i o -> Persist m p r i o
-cmapQuery f p = p { persistRead = lmap f $ persistRead p }
-
-mapResponse :: Functor m => (r -> s) -> Persist m q r i o -> Persist m q s i o
-mapResponse f p = p { persistWrite = (fmap . fmap) f $ persistWrite p }
-
-hoistPersist :: (forall a. m a -> n a) -> Persist m q r i o -> Persist n q r i o
-hoistPersist n (Persist r w) = Persist (\q -> n $ r q) (\i -> n $ w i)
-
--- | Persistence for binary data indexed by an integer id. The data will be written into a table
--- called tableName (which will be created whenever an operation is run if it doesn't exist) with
--- the schema: (id integer primary key, data blob)
-binSqliteIds :: Text -> Persist IO Connection r Void (Vector Int)
-binSqliteIds table = Persist (binaryDataSelectIds table) absurd
-
-binSqliteData :: Text -> Persist IO Connection () (Connection, (Int, ByteString)) (Vector (Int, ByteString))
-binSqliteData table = Persist pread pwrite
-  where
-    pread conn = binaryDataSelectAll table conn
-    pwrite (conn, (rid, bs)) = binaryDataInsert table conn rid bs
-
-data Resource m h = Resource
-  { resourceAcquire :: m h
-  , resourceRelease :: h -> m ()
-  , resourceWith :: forall x . (h -> m x) -> m x
-  }
-
-defaultResourceWith :: MonadMask m => m h -> (h -> m ()) -> (h -> m x) -> m x
-defaultResourceWith = Control.Monad.Catch.bracket
-
-persistWithResource
-  :: Functor m
-  => Resource m h
-  -> Persist m (h, q) r (h, i) o
-  -> (Persist m q r i o -> m x)
-  -> m x
-persistWithResource (Resource _ _ with) p f = with (\h -> f $ cmapQuery (h,) $ lmap (h,) p)
-
-sqliteResource :: FilePath -> Resource IO Connection
-sqliteResource dbname = Resource
-  { resourceAcquire = Sqlite.open dbname
-  , resourceRelease = Sqlite.close
-  , resourceWith = Sqlite.withConnection dbname
-  }
-
 data Platform
 
 tagPlatform :: Text -> Name Platform
@@ -199,16 +144,16 @@ slorp = composeExtract (\f -> ReaderT $ \b -> pure $ f b) . Control.Foldl.hoists
 releaseMapFold
   :: (Release -> ReleaseAsset -> a -> ReleaseMapData)
   -> FoldM IO ByteString (Release -> ReleaseAsset -> a)
-  -> AssetFold (ReleaseMapData, Id ReleaseAsset, a)
+  -> AssetFold (Id ReleaseAsset, ReleaseMapData, a)
 releaseMapFold parseNames = composeExtract applyParse . slorp . fmap uncurry
   where
     applyParse a = do
       (r, ra) <- Control.Monad.Reader.ask
-      pure (parseNames r ra a, GitHub.releaseAssetId ra, a)
+      pure (GitHub.releaseAssetId ra, parseNames r ra a, a)
 
-toReleaseMap :: Vector (ReleaseMapData, Id ReleaseAsset, a) -> ReleaseMap a
+toReleaseMap :: Vector (ReleaseMapData, a) -> ReleaseMap a
 toReleaseMap = Data.Coerce.coerce . foldMap
-  (\((release, platform, asset), _, a) ->
+  (\((release, platform, asset), a) ->
       MonoidalMap.singleton
         release
         (MonoidalMap.singleton
@@ -216,14 +161,6 @@ toReleaseMap = Data.Coerce.coerce . foldMap
           (Map.singleton asset a)
         )
   )
-
-releaseMapCodec
-  :: Codec' ByteString (ReleaseMapData, a)
-  -> Persist IO q r (Int, ByteString) (Vector (Int, ByteString))
-  -> Persist IO q r (ReleaseMapData, Id ReleaseAsset, a) (Vector (ReleaseMapData, Id ReleaseAsset, a))
-releaseMapCodec (Codec enc dec) = dimap
-  (\(d, i, a) -> (GitHub.untagId i, enc (d, a)))
-  (fmap (\(i, bs) -> dec bs & \(r, a) -> (r, GitHub.mkId Proxy i, a)))
 
 type ReleaseMapData = (Name Release, Name Platform, Name ReleaseAsset)
 
@@ -245,63 +182,52 @@ releaseMapMain
   -> FilePath
   -> (ReleaseMap a -> IO x)
   -> IO x
-releaseMapMain config fold codec parseNames path callback = do
+releaseMapMain config fold codec parseNames dbPath callback = do
   queue <- TBQueue.newTBQueueIO 10
-  let pids = binSqliteIds "release"
-      (pdat, writeWorker) = workerize queue $ binSqliteData "release"
-      cli conn = assetFoldCli
-        config
-          (releaseMapFold parseNames fold)
-          (cmapQuery (const conn) pids)
-          (releaseMapCodec codec (cmapQuery (const conn) $ lmap (conn,) pdat))
-          (lmap toReleaseMap callback)
-  resourceWith (sqliteResource path) $ \conn ->
-    Async.withAsync writeWorker $ \a1 ->
-      Async.withAsync (cli conn) $ \a2 ->
-        either absurd id <$> Async.waitEither a1 a2
+  Sqlite.withConnection dbPath $ \conn ->
+    let readIds = setFromFoldable . fmap (GitHub.mkId Proxy) <$> binaryDataSelectIds "release" conn
+        readData = fmap (codecDecode codec) <$> binaryDataSelectData "release" conn
+        encoder (i, d, a) = (GitHub.untagId i, codecEncode codec (d, a))
+        writeData = STM.atomically . TBQueue.writeTBQueue queue . encoder
+        writeWorker = queueWorker queue $ uncurry (binaryDataInsert "release" conn)
+        fold' = releaseMapFold parseNames fold
+        cli ids = assetFoldCli config fold' ids writeData readData (callback . toReleaseMap)
+    in Async.withAsync writeWorker $ \a1 ->
+         Async.withAsync (readIds >>= cli) $ \a2 ->
+           either absurd id <$> Async.waitEither a1 a2
 
 assetFoldCli
   :: AuthMethod am
   => Config am
   -> AssetFold a
-  -> Persist IO () r Void (Vector Int)
-  -> Persist IO () r a b
-  -> (b -> IO x)
+  -> Set (Id ReleaseAsset) -- ^ The assets we already know about
+  -> (a -> IO r) -- ^ how to write data about new assets
+  -> IO b -- ^ how to read saved asset data
+  -> (b -> IO x) -- ^ callback to run on all the data after new data is written
   -> IO x
-assetFoldCli config fold pids pdata callback = do
-  existing <- persistRead pids ()
-  enew <- getNewAssets config existing $ postEffect (persistWrite $ hoistPersist liftIO pdata) fold
+assetFoldCli config fold existing writeData readData callback = do
+  enew <- getNewAssets config existing $ postEffect (liftIO . writeData) fold
   case enew of
     Left err -> error $ show err
     Right _ -> do
-      d <- persistRead pdata ()
+      d <- readData
       callback d
 
 postEffect :: Monad m => (b -> m r) -> FoldM m a b -> FoldM m a b
 postEffect f = composeExtract ((\cb b -> b <$ cb b) f)
 
+-- TODO Does this indicate that FoldM is a right module?
 composeExtract :: Monad m => (b -> m r) -> FoldM m a b -> FoldM m a r
 composeExtract f (FoldM s i extract) = FoldM s i (extract >=> f)
 
-workerize
-  :: TBQueue i
-  -> Persist IO q r i o
-  -> (Persist IO q () i o, IO x)
-workerize queue (Persist r w) =
-  let persist = Persist
-        (\q -> STM.atomically (STM.check =<< TBQueue.isEmptyTBQueue queue) *> r q)
-        (STM.atomically . TBQueue.writeTBQueue queue)
-      worker  = persistenceWorker queue w
-  in (persist, worker)
-
-persistenceWorker :: TBQueue a -> (a -> IO b) -> IO c
-persistenceWorker q f = forever $ f =<< STM.atomically (TBQueue.readTBQueue q)
+queueWorker :: TBQueue a -> (a -> IO b) -> IO c
+queueWorker q f = forever $ f =<< STM.atomically (TBQueue.readTBQueue q)
 
 -- Just wraps foldNewRepoAssets
 getNewAssets
   :: AuthMethod am
   => Config am
-  -> Vector Int
+  -> Set (Id ReleaseAsset)
   -> AssetFold a
   -> IO (Either Error (Vector (Vector a)))
 getNewAssets Config{..} existing fold =
@@ -311,7 +237,7 @@ getNewAssets Config{..} existing fold =
     configOwner
     configRepo
     configFetchCount
-    (Set.fromList $ Data.Foldable.toList $ fmap (GitHub.mkId Proxy) $ existing)
+    existing
     fold
 
 data SqlFieldType = FieldInteger
@@ -320,13 +246,13 @@ data SqlFieldType = FieldInteger
   | FieldText
   deriving (Eq, Ord, Enum, Show, Generic, Data, NFData)
 
-binaryDataSelectAll :: Text -> Connection -> IO (Vector (Int, ByteString))
-binaryDataSelectAll name conn = withCreateTable name conn
-  $ foldQuery_ Control.Foldl.vectorM conn
-  $ binaryDataSelectAllQuery name
+binaryDataSelectData :: Text -> Connection -> IO (Vector ByteString)
+binaryDataSelectData name conn = withCreateTable name conn
+  $ foldQuery_ (lmap Sqlite.fromOnly $ Control.Foldl.vectorM) conn
+  $ binaryDataSelectDataQuery name
 
-binaryDataSelectAllQuery :: Text -> Query
-binaryDataSelectAllQuery name = Query [text| select id, data from $name |]
+binaryDataSelectDataQuery :: Text -> Query
+binaryDataSelectDataQuery name = Query [text| select data from $name |]
 
 binaryDataInsert :: Text -> Connection -> Int -> ByteString -> IO ()
 binaryDataInsert name conn a b = withCreateTable name conn $ do
@@ -343,7 +269,7 @@ binaryDataInsertQuery name = Query
 
 binaryDataSelectIds :: Text -> Connection -> IO (Vector Int)
 binaryDataSelectIds name conn = withCreateTable name conn
-  $ foldQuery_ (lmap Sqlite.fromOnly Control.Foldl.vectorM) conn
+  $ foldQuery_ (lmap Sqlite.fromOnly $ Control.Foldl.vectorM) conn
   $ binaryDataSelectIdsQuery name
 
 binaryDataSelectIdsQuery :: Text -> Query
@@ -392,3 +318,6 @@ foldQuery_ (FoldM step initial extract) conn query = do
   a <- initial
   r <- Sqlite.fold_ conn query a step
   extract r
+
+setFromFoldable :: (Foldable f, Ord a) => f a -> Set a
+setFromFoldable = Set.fromList . Foldable.toList
