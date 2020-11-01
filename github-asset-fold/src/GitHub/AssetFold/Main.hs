@@ -119,16 +119,16 @@ binaryCodec = Codec enc dec
       Data.Bifunctor.bimap (\(_, _, e) -> Text.pack e) (\(_, _, a) -> a)
       . Binary.decodeOrFail
 
-binaryCodecStrict :: Binary a => Codec ByteString ByteString a (Either Text a)
+binaryCodecStrict :: (Binary a, Binary b) => Codec ByteString ByteString a (Either Text b)
 binaryCodecStrict = strictify binaryCodec
 
-jsonCodec :: (ToJSON a, FromJSON a) => Codec LBS.ByteString LBS.ByteString a (Either Text a)
+jsonCodec :: (ToJSON a, FromJSON b) => Codec LBS.ByteString LBS.ByteString a (Either Text b)
 jsonCodec = Codec enc dec
   where
     enc = Aeson.encode
     dec = Data.Bifunctor.first Text.pack . Aeson.eitherDecode
 
-jsonCodecStrict :: (ToJSON a, FromJSON a) => Codec ByteString ByteString a (Either Text a)
+jsonCodecStrict :: (ToJSON a, FromJSON b) => Codec ByteString ByteString a (Either Text b)
 jsonCodecStrict = strictify jsonCodec
 
 data Platform
