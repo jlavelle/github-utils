@@ -2,7 +2,24 @@
 {-# Language QuasiQuotes     #-}
 {-# Language RecordWildCards #-}
 
-module GitHub.AssetFold.Main where
+module GitHub.AssetFold.Main
+  ( Codec (..)
+  , Codec'
+  , Config (..)
+  , ReleaseMap
+  , assetFoldCli
+  , assetUrlAndSha256
+  , binaryCodec
+  , binaryCodecStrict
+  , jsonCodec
+  , jsonCodecStrict
+  , parseJSONConfig
+  , releaseMapMain
+  , sha256
+  , strictify
+  , tagPlatform
+  , toEncodingConfig
+  ) where
 
 import           Prelude
 
@@ -12,7 +29,6 @@ import qualified Control.Concurrent.STM         as STM
 import           Control.Concurrent.STM.TBQueue (TBQueue)
 import qualified Control.Concurrent.STM.TBQueue as TBQueue
 import           Control.DeepSeq                (NFData)
-import qualified Control.Exception
 import           Control.Foldl                  (Fold, FoldM (..))
 import qualified Control.Foldl
 import           Control.Monad                  (forever, (>=>))
@@ -21,9 +37,7 @@ import           Control.Monad.Reader           (ReaderT (..))
 import qualified Control.Monad.Reader
 import qualified Crypto.Hash.SHA256             as Sha256
 import           Data.Aeson
-    (Encoding, Value, parseJSON, toEncoding, withObject, (.:))
-import           Data.Aeson                     (Value (..))
-import           Data.Aeson                     (FromJSON, ToJSON)
+    (Encoding, FromJSON, ToJSON, Value (..), parseJSON, toEncoding, withObject, (.:))
 import qualified Data.Aeson                     as Aeson
 import           Data.Aeson.Encoding            (pair, pairs)
 import qualified Data.Aeson.Encoding
@@ -34,12 +48,11 @@ import qualified Data.Binary                    as Binary
 import           Data.ByteString                (ByteString)
 import qualified Data.ByteString.Lazy           as LBS
 import qualified Data.Coerce
-import           Data.Data                      (Data)
 import qualified Data.Foldable
+import qualified Data.Foldable                  as Foldable
 import qualified Data.Map.Monoidal              as MonoidalMap
 import           Data.Map.Strict                (Map)
 import qualified Data.Map.Strict                as Map
-import           Data.Profunctor                (Profunctor (..))
 import           Data.Proxy                     (Proxy (..))
 import           Data.Set                       (Set)
 import qualified Data.Set                       as Set
@@ -47,7 +60,6 @@ import           Data.Text                      (Text)
 import qualified Data.Text                      as Text
 import           Data.Vector                    (Vector)
 import           Data.Void                      (absurd)
-import           Database.SQLite.Simple         (Connection, NamedParam (..), Query (..))
 import qualified Database.SQLite.Simple         as Sqlite
 import           GHC.Generics                   (Generic)
 import           GitHub
@@ -55,8 +67,8 @@ import           GitHub
 import qualified GitHub
 import           GitHub.AssetFold               (AssetFold)
 import qualified GitHub.AssetFold
-import           NeatInterpolation              (text)
-import qualified Data.Foldable as Foldable
+import           SQLite.BinaryCache             (Cache (..), Codec (..))
+import qualified SQLite.BinaryCache             as BinaryCache
 
 -- TODO This should really be called something more descriptive
 data Config am = Config
@@ -88,30 +100,19 @@ parseJSONConfig = withObject "Config" $ \obj -> Config
 toEncodingFetchCount :: FetchCount -> Encoding
 toEncodingFetchCount = \case
    FetchAtLeast w -> toEncoding w
-   FetchAll -> Data.Aeson.Encoding.string "all"
+   FetchAll       -> Data.Aeson.Encoding.string "all"
 
 parseJSONFetchCount :: Value -> Parser FetchCount
 parseJSONFetchCount v = (FetchAtLeast <$> parseJSON v) <|> (FetchAll <$ parseAll v)
   where
     parseAll = \case
       String "all" -> pure ()
-      _ -> Control.Applicative.empty
+      _            -> Control.Applicative.empty
 
-data Codec i o a b = Codec
-  { codecEncode :: a -> o
-  , codecDecode :: i -> b
-  }
-  deriving (Functor, Generic)
-
-type Codec' a b = Codec a a b b
-
-instance Profunctor (Codec i o) where
-  dimap f g (Codec enc dec) = Codec (lmap f enc) (fmap g dec)
-
-strictify :: Codec LBS.ByteString LBS.ByteString a b -> Codec ByteString ByteString a b
+strictify :: Codec LBS.ByteString a b -> Codec ByteString a b
 strictify (Codec enc dec) = Codec (LBS.toStrict . enc) (dec . LBS.fromStrict)
 
-binaryCodec :: (Binary a, Binary b) => Codec LBS.ByteString LBS.ByteString a (Either Text b)
+binaryCodec :: (Binary a, Binary b) => Codec LBS.ByteString a (Either Text b)
 binaryCodec = Codec enc dec
   where
     enc = Binary.encode
@@ -119,16 +120,16 @@ binaryCodec = Codec enc dec
       Data.Bifunctor.bimap (\(_, _, e) -> Text.pack e) (\(_, _, a) -> a)
       . Binary.decodeOrFail
 
-binaryCodecStrict :: (Binary a, Binary b) => Codec ByteString ByteString a (Either Text b)
+binaryCodecStrict :: (Binary a, Binary b) => Codec ByteString a (Either Text b)
 binaryCodecStrict = strictify binaryCodec
 
-jsonCodec :: (ToJSON a, FromJSON b) => Codec LBS.ByteString LBS.ByteString a (Either Text b)
+jsonCodec :: (ToJSON a, FromJSON b) => Codec LBS.ByteString a (Either Text b)
 jsonCodec = Codec enc dec
   where
     enc = Aeson.encode
     dec = Data.Bifunctor.first Text.pack . Aeson.eitherDecode
 
-jsonCodecStrict :: (ToJSON a, FromJSON b) => Codec ByteString ByteString a (Either Text b)
+jsonCodecStrict :: (ToJSON a, FromJSON b) => Codec ByteString a (Either Text b)
 jsonCodecStrict = strictify jsonCodec
 
 data Platform
@@ -173,6 +174,28 @@ assetUrlAndSha256 =
   <$> pure GitHub.releaseAssetBrowserDownloadUrl
   <*> sha256
 
+type Codec' a b = Codec a b b
+
+data ReleaseCache a = ReleaseCache
+  { releaseCacheWrite    :: (Id ReleaseAsset, ReleaseMapData, a) -> IO ()
+  , releaseCacheReadIds  :: IO (Set (Id ReleaseAsset))
+  , releaseCacheReadData :: IO (Vector (ReleaseMapData, a))
+  }
+
+withReleaseCache
+  :: FilePath
+  -> Codec' ByteString (ReleaseMapData, a)
+  -> (ReleaseCache a -> IO b)
+  -> IO b
+withReleaseCache path (Codec enc dec) action = Sqlite.withConnection path $ \conn ->
+  let cache = Cache @Int conn "release"
+      releaseCacheWrite (i, d, a) = BinaryCache.write cache (GitHub.untagId i) $ enc (d, a)
+      -- TODO We don't want to rely on the fields being called id and data, fix this upstream
+      releaseCacheReadIds =
+        setFromFoldable . fmap (GitHub.mkId Proxy) <$> BinaryCache.selectField cache "id"
+      releaseCacheReadData = fmap dec <$> BinaryCache.selectField cache "data"
+  in action ReleaseCache{releaseCacheWrite, releaseCacheReadIds, releaseCacheReadData}
+
 releaseMapMain
   :: AuthMethod am
   => Config am
@@ -184,16 +207,14 @@ releaseMapMain
   -> IO x
 releaseMapMain config fold codec parseNames dbPath callback = do
   queue <- TBQueue.newTBQueueIO 10
-  Sqlite.withConnection dbPath $ \conn ->
-    let readIds = setFromFoldable . fmap (GitHub.mkId Proxy) <$> binaryDataSelectIds "release" conn
-        readData = fmap (codecDecode codec) <$> binaryDataSelectData "release" conn
-        encoder (i, d, a) = (GitHub.untagId i, codecEncode codec (d, a))
-        writeData = STM.atomically . TBQueue.writeTBQueue queue . encoder
-        writeWorker = queueWorker queue $ uncurry (binaryDataInsert "release" conn)
+  withReleaseCache dbPath codec $ \ReleaseCache{..} ->
+    let writeData = STM.atomically . TBQueue.writeTBQueue queue
+        writeWorker = queueWorker queue releaseCacheWrite
         fold' = releaseMapFold parseNames fold
-        cli ids = assetFoldCli config fold' ids writeData readData (callback . toReleaseMap)
+        cli ids =
+          assetFoldCli config fold' ids writeData releaseCacheReadData (callback . toReleaseMap)
     in Async.withAsync writeWorker $ \a1 ->
-         Async.withAsync (readIds >>= cli) $ \a2 ->
+         Async.withAsync (releaseCacheReadIds >>= cli) $ \a2 ->
            either absurd id <$> Async.waitEither a1 a2
 
 assetFoldCli
@@ -239,85 +260,6 @@ getNewAssets Config{..} existing fold =
     configFetchCount
     existing
     fold
-
-data SqlFieldType = FieldInteger
-  | FieldBlob
-  | FieldReal
-  | FieldText
-  deriving (Eq, Ord, Enum, Show, Generic, Data, NFData)
-
-binaryDataSelectData :: Text -> Connection -> IO (Vector ByteString)
-binaryDataSelectData name conn = withCreateTable name conn
-  $ foldQuery_ (lmap Sqlite.fromOnly $ Control.Foldl.vectorM) conn
-  $ binaryDataSelectDataQuery name
-
-binaryDataSelectDataQuery :: Text -> Query
-binaryDataSelectDataQuery name = Query [text| select data from $name |]
-
-binaryDataInsert :: Text -> Connection -> Int -> ByteString -> IO ()
-binaryDataInsert name conn a b = withCreateTable name conn $ do
-  let params = [ ":id" := a, ":data" := b ]
-  Sqlite.executeNamed conn (binaryDataInsertQuery name) params
-
-binaryDataInsertQuery :: Text -> Query
-binaryDataInsertQuery name = Query
-  [text|
-    insert into $name (id, data)
-    values (:id, :data)
-    on conflict(id) do update set data = excluded.data
-  |]
-
-binaryDataSelectIds :: Text -> Connection -> IO (Vector Int)
-binaryDataSelectIds name conn = withCreateTable name conn
-  $ foldQuery_ (lmap Sqlite.fromOnly $ Control.Foldl.vectorM) conn
-  $ binaryDataSelectIdsQuery name
-
-binaryDataSelectIdsQuery :: Text -> Query
-binaryDataSelectIdsQuery name = Query [text| select id from $name |]
-
-withCreateTable :: Text -> Connection -> IO a -> IO a
-withCreateTable name conn action = Control.Exception.try action >>= \case
-  Right a -> pure a
-  Left (Sqlite.SQLError Sqlite.ErrorError _ _) -> createTable name conn *> action
-  Left e -> Control.Exception.throw e
-
-createTable :: Text -> Connection -> IO ()
-createTable name conn = Sqlite.execute_ conn $ binaryDataTableQuery name
-
-binaryDataTableQuery :: Text -> Query
-binaryDataTableQuery name = Query $ mkTableSql name FieldInteger [("data", FieldBlob)]
-
-mkTableSql :: Text -> SqlFieldType -> [(Text, SqlFieldType)] -> Text
-mkTableSql name idType fieldSpec =
-  let fields = toFieldDefs fieldSpec
-      idName = nameOf idType
-  in [text|
-       create table if not exists $name(
-         id $idName primary key,
-         $fields
-       )
-     |]
-
-toFieldDefs :: [(Text, SqlFieldType)] -> Text
-toFieldDefs =
-  Text.intercalate ",\n"
-  . fmap
-    (\(name, sqlData) ->
-      let sqlName = nameOf sqlData
-      in [text| $name $sqlName not null |])
-
-nameOf :: SqlFieldType -> Text
-nameOf = \case
-  FieldInteger -> "integer"
-  FieldReal -> "real"
-  FieldText -> "text"
-  FieldBlob -> "blob"
-
-foldQuery_ :: Sqlite.FromRow r => FoldM IO r o -> Connection -> Query -> IO o
-foldQuery_ (FoldM step initial extract) conn query = do
-  a <- initial
-  r <- Sqlite.fold_ conn query a step
-  extract r
 
 setFromFoldable :: (Foldable f, Ord a) => f a -> Set a
 setFromFoldable = Set.fromList . Foldable.toList

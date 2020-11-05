@@ -4,10 +4,10 @@ cabal-version: 1.12
 --
 -- see: https://github.com/sol/hpack
 --
--- hash: 0eb8199e6e9b0d004d02727971f856c273d49139898fc9520e434e09c69b8e99
+-- hash: 027c3e8782c84825b8aecf9e4b50904c8737c6694b1df38515cf2512bd8a9751
 
 name:           github-asset-fold
-version:        0.5.0.0
+version:        0.5.2.0
 homepage:       https://github.com/jlavelle/github-utils#readme
 bug-reports:    https://github.com/jlavelle/github-utils/issues
 author:         John Lavelle
@@ -46,8 +46,8 @@ library
     , http-client-tls
     , monoidal-containers
     , mtl
-    , neat-interpolation
     , profunctors
+    , sqlite-binary-cache >=0.2 && <0.3
     , sqlite-simple
     , stm
     , text
@@ -80,8 +80,8 @@ test-suite github-asset-fold-test
     , http-client-tls
     , monoidal-containers
     , mtl
-    , neat-interpolation
     , profunctors
+    , sqlite-binary-cache >=0.2 && <0.3
     , sqlite-simple
     , stm
     , text

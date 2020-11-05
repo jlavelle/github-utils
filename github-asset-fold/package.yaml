@@ -1,5 +1,5 @@
 name:       github-asset-fold
-version:    0.5.2.0
+version:    0.6.0.0
 github:     jlavelle/github-utils
 license:    MIT
 author:     John Lavelle
@@ -69,8 +69,8 @@ dependencies:
   - http-client-tls
   - monoidal-containers
   - mtl
-  - neat-interpolation
   - profunctors
+  - sqlite-binary-cache >=0.2 && <0.3
   - sqlite-simple
   - stm
   - text

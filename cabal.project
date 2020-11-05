@@ -1,3 +1,8 @@
 packages:  github-asset-fold
          , github-event-watcher
 index-state: 2020-10-22T00:00:00Z
+source-repository-package
+        type: git
+        location: https://github.com/jlavelle/sqlite-binary-cache.git
+        tag: v0.2.1.0
+        --sha256: 1yaai89c9qiabzhr0zh194ghk63w5svvzljgnxynfrk54k396h4n
