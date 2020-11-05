@@ -29,7 +29,7 @@ import qualified Control.Concurrent.STM         as STM
 import           Control.Concurrent.STM.TBQueue (TBQueue)
 import qualified Control.Concurrent.STM.TBQueue as TBQueue
 import           Control.DeepSeq                (NFData)
-import           Control.Foldl                  (Fold, FoldM (..))
+import           Control.Foldl                  (Fold (..), FoldM (..))
 import qualified Control.Foldl
 import           Control.Monad                  (forever, (>=>))
 import           Control.Monad.IO.Class         (MonadIO (liftIO))
@@ -49,8 +49,7 @@ import           Data.ByteString                (ByteString)
 import qualified Data.ByteString.Lazy           as LBS
 import qualified Data.Coerce
 import qualified Data.Foldable
-import qualified Data.Foldable                  as Foldable
-import qualified Data.Map.Monoidal              as MonoidalMap
+import qualified Data.Map.Monoidal
 import           Data.Map.Strict                (Map)
 import qualified Data.Map.Strict                as Map
 import           Data.Proxy                     (Proxy (..))
@@ -155,9 +154,9 @@ releaseMapFold parseNames = composeExtract applyParse . slorp . fmap uncurry
 toReleaseMap :: Vector (ReleaseMapData, a) -> ReleaseMap a
 toReleaseMap = Data.Coerce.coerce . foldMap
   (\((release, platform, asset), a) ->
-      MonoidalMap.singleton
+      Data.Map.Monoidal.singleton
         release
-        (MonoidalMap.singleton
+        (Data.Map.Monoidal.singleton
           platform
           (Map.singleton asset a)
         )
@@ -166,7 +165,7 @@ toReleaseMap = Data.Coerce.coerce . foldMap
 type ReleaseMapData = (Name Release, Name Platform, Name ReleaseAsset)
 
 sha256 :: Fold ByteString ByteString
-sha256 = Control.Foldl.Fold Sha256.update Sha256.init Sha256.finalize
+sha256 = Fold Sha256.update Sha256.init Sha256.finalize
 
 assetUrlAndSha256 :: Fold ByteString (Release -> ReleaseAsset -> (Text, ByteString))
 assetUrlAndSha256 =
@@ -262,4 +261,4 @@ getNewAssets Config{..} existing fold =
     fold
 
 setFromFoldable :: (Foldable f, Ord a) => f a -> Set a
-setFromFoldable = Set.fromList . Foldable.toList
+setFromFoldable = Set.fromList . Data.Foldable.toList
