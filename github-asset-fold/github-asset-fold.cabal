@@ -4,10 +4,10 @@ cabal-version: 1.12
 --
 -- see: https://github.com/sol/hpack
 --
--- hash: 98e8a6d6696dd9c4b69e11d50e5c2006d6c3de3fbbdfd46c492a1408e3c5aaee
+-- hash: 31f0d2f59d3b06c54133177dbe929f0a5a39269baa8ab4fbc4cbc1507b2aac2f
 
 name:           github-asset-fold
-version:        0.6.0.0
+version:        0.7.0.0
 homepage:       https://github.com/jlavelle/github-utils#readme
 bug-reports:    https://github.com/jlavelle/github-utils/issues
 author:         John Lavelle

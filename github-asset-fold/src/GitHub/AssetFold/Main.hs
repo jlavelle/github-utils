@@ -146,9 +146,9 @@ releaseMapFold
   :: (Release -> ReleaseAsset -> a -> ReleaseMapData)
   -> FoldM IO ByteString (Release -> ReleaseAsset -> a)
   -> AssetFold (Id ReleaseAsset, ReleaseMapData, a)
-releaseMapFold parseNames = composeExtract applyParse . slorp . fmap uncurry
+releaseMapFold parseNames = composeExtract extract . slorp . fmap uncurry
   where
-    applyParse a = do
+    extract a = do
       (r, ra) <- Control.Monad.Reader.ask
       pure (GitHub.releaseAssetId ra, parseNames r ra a, a)
 
@@ -207,17 +207,15 @@ releaseMapMain
   -> IO r
 releaseMapMain config fold codec parseNames dbPath callback =
   withReleaseCache dbPath codec $ \ReleaseCache{..} -> do
-    let done = releaseCacheReadData >>= callback . toReleaseMap
-    withQueueWorker releaseCacheWrite (const done) $ \queue -> do
+    withQueueWorker releaseCacheWrite $ \enqueue -> do
       existing <- releaseCacheReadIds
-      enew <- getNewAssets config existing $ enqueueFold queue
+      enew <- getNewAssets config existing $ enqFold enqueue
       case enew of
         Left err -> fail $ show err
         Right _  -> pure ()
+    releaseCacheReadData >>= callback . toReleaseMap
   where
-    enqueueFold queue = postEffect
-      (liftIO . STM.atomically . TBQueue.writeTBQueue queue . Just)
-      (releaseMapFold parseNames fold)
+    enqFold enqueue = postEffect (liftIO . enqueue) $ releaseMapFold parseNames fold
 
 postEffect :: Monad m => (b -> m r) -> FoldM m a b -> FoldM m a b
 postEffect f = composeExtract ((\cb b -> b <$ cb b) f)
@@ -226,18 +224,17 @@ postEffect f = composeExtract ((\cb b -> b <$ cb b) f)
 composeExtract :: Monad m => (b -> m r) -> FoldM m a b -> FoldM m a r
 composeExtract f (FoldM s i extract) = FoldM s i (extract >=> f)
 
--- Process elements added to a queue in the interim function, automatically making sure the queue is
--- empty before continuing. This addresses the eariler issues with releaseMapMain calling its
--- callback before all of the data was written to the cache, resulting in incomplete output.
-withQueueWorker :: (a -> IO b) -> (x -> IO r) -> (TBQueue (Maybe a) -> IO x) -> IO r
-withQueueWorker workFn done interim = do
+-- Automatically makes sure that all items enqueued with the function passed into @action@ are
+-- processed before exiting
+withQueueWorker :: (a -> IO b) -> ((a -> IO ()) -> IO r) -> IO r
+withQueueWorker workFn action = do
   queue <- TBQueue.newTBQueueIO 10
   Async.withAsync (queueWorker queue workFn) $ \worker -> do
     Async.link worker
-    x <- interim queue
+    r <- action $ STM.atomically . TBQueue.writeTBQueue queue . Just
     STM.atomically $ TBQueue.writeTBQueue queue Nothing
     Async.wait worker
-    done x
+    pure r
 
 -- Stops on the first Nothing it receives
 queueWorker :: TBQueue (Maybe a) -> (a -> IO b) -> IO ()
