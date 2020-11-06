@@ -4,10 +4,10 @@ cabal-version: 1.12
 --
 -- see: https://github.com/sol/hpack
 --
--- hash: 027c3e8782c84825b8aecf9e4b50904c8737c6694b1df38515cf2512bd8a9751
+-- hash: 98e8a6d6696dd9c4b69e11d50e5c2006d6c3de3fbbdfd46c492a1408e3c5aaee
 
 name:           github-asset-fold
-version:        0.5.2.0
+version:        0.6.0.0
 homepage:       https://github.com/jlavelle/github-utils#readme
 bug-reports:    https://github.com/jlavelle/github-utils/issues
 author:         John Lavelle
@@ -84,6 +84,9 @@ test-suite github-asset-fold-test
     , sqlite-binary-cache >=0.2 && <0.3
     , sqlite-simple
     , stm
+    , tasty
+    , tasty-golden
+    , tasty-hunit
     , text
     , vector
   default-language: Haskell2010

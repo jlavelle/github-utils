@@ -7,10 +7,10 @@ module GitHub.AssetFold.Main
   , Codec'
   , Config (..)
   , ReleaseMap
-  , assetFoldCli
   , assetUrlAndSha256
   , binaryCodec
   , binaryCodecStrict
+  , envTokenAuth
   , jsonCodec
   , jsonCodecStrict
   , parseJSONConfig
@@ -31,7 +31,7 @@ import qualified Control.Concurrent.STM.TBQueue as TBQueue
 import           Control.DeepSeq                (NFData)
 import           Control.Foldl                  (Fold (..), FoldM (..))
 import qualified Control.Foldl
-import           Control.Monad                  (forever, (>=>))
+import           Control.Monad                  ((>=>))
 import           Control.Monad.IO.Class         (MonadIO (liftIO))
 import           Control.Monad.Reader           (ReaderT (..))
 import qualified Control.Monad.Reader
@@ -55,19 +55,20 @@ import qualified Data.Map.Strict                as Map
 import           Data.Proxy                     (Proxy (..))
 import           Data.Set                       (Set)
 import qualified Data.Set                       as Set
+import qualified Data.String
 import           Data.Text                      (Text)
 import qualified Data.Text                      as Text
 import           Data.Vector                    (Vector)
-import           Data.Void                      (absurd)
 import qualified Database.SQLite.Simple         as Sqlite
 import           GHC.Generics                   (Generic)
 import           GitHub
-    (AuthMethod, Error, FetchCount (..), Id, Name, Owner, Release, ReleaseAsset, Repo)
+    (Auth, AuthMethod, Error, FetchCount (..), Id, Name, Owner, Release, ReleaseAsset, Repo)
 import qualified GitHub
 import           GitHub.AssetFold               (AssetFold)
 import qualified GitHub.AssetFold
 import           SQLite.BinaryCache             (Cache (..), Codec (..))
 import qualified SQLite.BinaryCache             as BinaryCache
+import qualified System.Environment
 
 -- TODO This should really be called something more descriptive
 data Config am = Config
@@ -202,36 +203,21 @@ releaseMapMain
   -> Codec' ByteString (ReleaseMapData, a)
   -> (Release -> ReleaseAsset -> a -> ReleaseMapData)
   -> FilePath
-  -> (ReleaseMap a -> IO x)
-  -> IO x
-releaseMapMain config fold codec parseNames dbPath callback = do
-  queue <- TBQueue.newTBQueueIO 10
-  withReleaseCache dbPath codec $ \ReleaseCache{..} ->
-    let writeData = STM.atomically . TBQueue.writeTBQueue queue
-        writeWorker = queueWorker queue releaseCacheWrite
-        fold' = releaseMapFold parseNames fold
-        cli ids =
-          assetFoldCli config fold' ids writeData releaseCacheReadData (callback . toReleaseMap)
-    in Async.withAsync writeWorker $ \a1 ->
-         Async.withAsync (releaseCacheReadIds >>= cli) $ \a2 ->
-           either absurd id <$> Async.waitEither a1 a2
-
-assetFoldCli
-  :: AuthMethod am
-  => Config am
-  -> AssetFold a
-  -> Set (Id ReleaseAsset) -- ^ The assets we already know about
-  -> (a -> IO r) -- ^ how to write data about new assets
-  -> IO b -- ^ how to read saved asset data
-  -> (b -> IO x) -- ^ callback to run on all the data after new data is written
-  -> IO x
-assetFoldCli config fold existing writeData readData callback = do
-  enew <- getNewAssets config existing $ postEffect (liftIO . writeData) fold
-  case enew of
-    Left err -> error $ show err
-    Right _ -> do
-      d <- readData
-      callback d
+  -> (ReleaseMap a -> IO r)
+  -> IO r
+releaseMapMain config fold codec parseNames dbPath callback =
+  withReleaseCache dbPath codec $ \ReleaseCache{..} -> do
+    let done = releaseCacheReadData >>= callback . toReleaseMap
+    withQueueWorker releaseCacheWrite (const done) $ \queue -> do
+      existing <- releaseCacheReadIds
+      enew <- getNewAssets config existing $ enqueueFold queue
+      case enew of
+        Left err -> fail $ show err
+        Right _  -> pure ()
+  where
+    enqueueFold queue = postEffect
+      (liftIO . STM.atomically . TBQueue.writeTBQueue queue . Just)
+      (releaseMapFold parseNames fold)
 
 postEffect :: Monad m => (b -> m r) -> FoldM m a b -> FoldM m a b
 postEffect f = composeExtract ((\cb b -> b <$ cb b) f)
@@ -240,8 +226,24 @@ postEffect f = composeExtract ((\cb b -> b <$ cb b) f)
 composeExtract :: Monad m => (b -> m r) -> FoldM m a b -> FoldM m a r
 composeExtract f (FoldM s i extract) = FoldM s i (extract >=> f)
 
-queueWorker :: TBQueue a -> (a -> IO b) -> IO c
-queueWorker q f = forever $ f =<< STM.atomically (TBQueue.readTBQueue q)
+-- Process elements added to a queue in the interim function, automatically making sure the queue is
+-- empty before continuing. This addresses the eariler issues with releaseMapMain calling its
+-- callback before all of the data was written to the cache, resulting in incomplete output.
+withQueueWorker :: (a -> IO b) -> (x -> IO r) -> (TBQueue (Maybe a) -> IO x) -> IO r
+withQueueWorker workFn done interim = do
+  queue <- TBQueue.newTBQueueIO 10
+  Async.withAsync (queueWorker queue workFn) $ \worker -> do
+    Async.link worker
+    x <- interim queue
+    STM.atomically $ TBQueue.writeTBQueue queue Nothing
+    Async.wait worker
+    done x
+
+-- Stops on the first Nothing it receives
+queueWorker :: TBQueue (Maybe a) -> (a -> IO b) -> IO ()
+queueWorker q f = loop
+  where
+    loop = STM.atomically (TBQueue.readTBQueue q) >>= maybe (pure ()) (\a -> f a *> loop)
 
 -- Just wraps foldNewRepoAssets
 getNewAssets
@@ -259,6 +261,9 @@ getNewAssets Config{..} existing fold =
     configFetchCount
     existing
     fold
+
+envTokenAuth :: String -> IO Auth
+envTokenAuth n = GitHub.OAuth . Data.String.fromString <$> System.Environment.getEnv n
 
 setFromFoldable :: (Foldable f, Ord a) => f a -> Set a
 setFromFoldable = Set.fromList . Data.Foldable.toList

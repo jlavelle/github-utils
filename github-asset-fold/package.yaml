@@ -1,5 +1,5 @@
 name:       github-asset-fold
-version:    0.6.0.0
+version:    0.7.0.0
 github:     jlavelle/github-utils
 license:    MIT
 author:     John Lavelle
@@ -89,3 +89,6 @@ tests:
       - -with-rtsopts=-N
     dependencies:
       - github-asset-fold
+      - tasty
+      - tasty-golden
+      - tasty-hunit
