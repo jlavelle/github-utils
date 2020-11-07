@@ -46,7 +46,9 @@ githubUtilsTestReleaseMap = do
     codec = either (error "decode error") id <$> AssetFold.Main.binaryCodecStrict
 
     parseNames release asset _ =
-      let [bin, _, plat] = Text.splitOn "-" $ GitHub.releaseAssetName asset
+      let (bin, plat) = case Text.splitOn "-" $ GitHub.releaseAssetName asset of
+            [b, _, p] -> (b, p)
+            _ -> error "Failed to parse release asset data"
       in ( GitHub.mkName Proxy $ GitHub.releaseName release
          , GitHub.mkName Proxy plat
          , GitHub.mkName Proxy bin
