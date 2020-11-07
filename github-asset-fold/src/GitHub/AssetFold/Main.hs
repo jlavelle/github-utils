@@ -218,7 +218,7 @@ releaseMapMain config fold codec parseNames dbPath callback =
     enqFold enqueue = postEffect (liftIO . enqueue) $ releaseMapFold parseNames fold
 
 postEffect :: Monad m => (b -> m r) -> FoldM m a b -> FoldM m a b
-postEffect f = composeExtract ((\cb b -> b <$ cb b) f)
+postEffect f = composeExtract (\b -> b <$ f b)
 
 -- TODO Does this indicate that FoldM is a right module?
 composeExtract :: Monad m => (b -> m r) -> FoldM m a b -> FoldM m a r
